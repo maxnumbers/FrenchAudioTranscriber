@@ -6,33 +6,13 @@ from transformers import pipeline
 import tempfile
 import os
 from tqdm import tqdm
-from contextlib import contextmanager
-import signal
+import time
 
 # Set page title and favicon
 st.set_page_config(page_title="French Audio Transcription and Translation", page_icon="🎙️")
 
 # Initialize the translation pipeline
 translator = pipeline("translation", model="Helsinki-NLP/opus-mt-fr-en")
-
-@contextmanager
-def timeout(time):
-    # Register a function to raise a TimeoutError on the signal.
-    signal.signal(signal.SIGALRM, raise_timeout)
-    # Schedule the signal to be sent after ``time``.
-    signal.alarm(time)
-
-    try:
-        yield
-    except TimeoutError:
-        pass
-    finally:
-        # Unregister the signal so it won't be triggered
-        # if the timeout is not reached.
-        signal.signal(signal.SIGALRM, signal.SIG_IGN)
-
-def raise_timeout(signum, frame):
-    raise TimeoutError
 
 def transcribe_audio(file_path, file_extension):
     recognizer = sr.Recognizer()
@@ -60,13 +40,24 @@ def transcribe_audio(file_path, file_extension):
     else:
         raise ValueError("Unsupported file format")
 
+    start_time = time.time()
+    max_duration = 60  # 60 seconds timeout
+
     try:
-        text = recognizer.recognize_google(audio_data, language="fr-FR")
-        return text
-    except sr.UnknownValueError:
-        raise Exception("Speech recognition could not understand the audio")
-    except sr.RequestError as e:
-        raise Exception(f"Could not request results from speech recognition service; {e}")
+        while True:
+            if time.time() - start_time > max_duration:
+                raise TimeoutError("Transcription process timed out")
+
+            try:
+                text = recognizer.recognize_google(audio_data, language="fr-FR")
+                return text
+            except sr.UnknownValueError:
+                # Retry if the audio is not recognized
+                time.sleep(1)
+            except sr.RequestError as e:
+                raise Exception(f"Could not request results from speech recognition service; {e}")
+    except TimeoutError:
+        raise Exception("Transcription process timed out. Please try again with a shorter audio file.")
 
 def translate_text(text):
     translation = translator(text, max_length=1000)[0]['translation_text']
@@ -93,8 +84,7 @@ def main():
                     for i in tqdm(range(100)):
                         if i == 25:
                             # Transcribe audio
-                            with timeout(60):  # 60 seconds timeout
-                                transcription = transcribe_audio(temp_file_path, os.path.splitext(uploaded_file.name)[1])
+                            transcription = transcribe_audio(temp_file_path, os.path.splitext(uploaded_file.name)[1])
                         elif i == 75:
                             # Translate transcription
                             translation = translate_text(transcription)
