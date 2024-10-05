@@ -63,7 +63,12 @@ def translate_text(text):
     translation = translator(text, max_length=1000)[0]['translation_text']
     return translation
 
+# Global variable
+is_processing = False
+
 def main():
+    global is_processing
+
     st.title("🇫🇷 French Audio Transcription and Translation 🇬🇧")
     st.write("Upload a French audio file to transcribe and translate it to English.")
 
@@ -73,6 +78,7 @@ def main():
         st.audio(uploaded_file, format='audio/wav')
 
         if st.button("Transcribe and Translate"):
+            is_processing = True
             with st.spinner("Processing audio..."):
                 # Save uploaded file temporarily
                 with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
@@ -89,6 +95,7 @@ def main():
                             # Translate transcription
                             translation = translate_text(transcription)
                         progress_bar.progress(i + 1)
+                        time.sleep(0.1)  # Add a small delay to make the progress visible
 
                     # Display results
                     st.subheader("French Transcription:")
@@ -109,9 +116,15 @@ def main():
                 finally:
                     # Clean up temporary file
                     os.unlink(temp_file_path)
+                    is_processing = False
 
-        if st.button("Cancel Processing"):
+    if st.button("Cancel Processing"):
+        if is_processing:
+            is_processing = False
+            st.warning("Processing cancelled by user.")
             st.stop()
+        else:
+            st.info("No processing is currently running.")
 
     st.markdown("---")
     st.write("Created with ❤️ using Streamlit")
