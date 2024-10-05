@@ -5,8 +5,9 @@ import torch
 from transformers import pipeline
 import tempfile
 import os
-from tqdm import tqdm
 import time
+import threading
+import queue
 
 # Set page title and favicon
 st.set_page_config(page_title="French Audio Transcription and Translation", page_icon="🎙️")
@@ -14,7 +15,7 @@ st.set_page_config(page_title="French Audio Transcription and Translation", page
 # Initialize the translation pipeline
 translator = pipeline("translation", model="Helsinki-NLP/opus-mt-fr-en")
 
-def transcribe_audio(file_path, file_extension):
+def transcribe_audio(file_path, file_extension, progress_callback):
     recognizer = sr.Recognizer()
     
     if file_extension in ['.mp3', '.wav', '.opus']:
@@ -50,6 +51,7 @@ def transcribe_audio(file_path, file_extension):
 
             try:
                 text = recognizer.recognize_google(audio_data, language="fr-FR")
+                progress_callback(0.5)  # Update progress to 50% after transcription
                 return text
             except sr.UnknownValueError:
                 # Retry if the audio is not recognized
@@ -59,16 +61,32 @@ def transcribe_audio(file_path, file_extension):
     except TimeoutError:
         raise Exception("Transcription process timed out. Please try again with a shorter audio file.")
 
-def translate_text(text):
+def translate_text(text, progress_callback):
     translation = translator(text, max_length=1000)[0]['translation_text']
+    progress_callback(1.0)  # Update progress to 100% after translation
     return translation
 
-# Global variable
-is_processing = False
+def process_audio(file_path, file_extension, progress_queue, cancel_event):
+    try:
+        progress_queue.put(0.0)
+        
+        def progress_callback(progress):
+            progress_queue.put(progress)
+        
+        transcription = transcribe_audio(file_path, file_extension, progress_callback)
+        if cancel_event.is_set():
+            return None, None
+        
+        translation = translate_text(transcription, progress_callback)
+        if cancel_event.is_set():
+            return None, None
+        
+        return transcription, translation
+    except Exception as e:
+        progress_queue.put((-1, str(e)))
+        return None, None
 
 def main():
-    global is_processing
-
     st.title("🇫🇷 French Audio Transcription and Translation 🇬🇧")
     st.write("Upload a French audio file to transcribe and translate it to English.")
 
@@ -78,53 +96,59 @@ def main():
         st.audio(uploaded_file, format='audio/wav')
 
         if st.button("Transcribe and Translate"):
-            is_processing = True
-            with st.spinner("Processing audio..."):
-                # Save uploaded file temporarily
-                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
-                    temp_file.write(uploaded_file.getvalue())
-                    temp_file_path = temp_file.name
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            cancel_button = st.empty()
 
-                try:
-                    progress_bar = st.progress(0)
-                    for i in tqdm(range(100)):
-                        if i == 25:
-                            # Transcribe audio
-                            transcription = transcribe_audio(temp_file_path, os.path.splitext(uploaded_file.name)[1])
-                        elif i == 75:
-                            # Translate transcription
-                            translation = translate_text(transcription)
-                        progress_bar.progress(i + 1)
-                        time.sleep(0.1)  # Add a small delay to make the progress visible
+            progress_queue = queue.Queue()
+            cancel_event = threading.Event()
 
-                    # Display results
-                    st.subheader("French Transcription:")
-                    st.write(transcription)
+            def update_progress():
+                while True:
+                    progress = progress_queue.get()
+                    if isinstance(progress, tuple):
+                        error_message = progress[1]
+                        st.error(f"An error occurred: {error_message}")
+                        break
+                    elif progress == 1.0:
+                        break
+                    progress_bar.progress(progress)
+                    status_text.text(f"Processing... {progress:.0%}")
 
-                    st.subheader("English Translation:")
-                    st.write(translation)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
+                temp_file.write(uploaded_file.getvalue())
+                temp_file_path = temp_file.name
 
-                except TimeoutError:
-                    st.error("Transcription process timed out. Please try again with a shorter audio file.")
-                except Exception as e:
-                    if "Speech recognition could not understand the audio" in str(e):
-                        st.error("The audio quality is too low for transcription. Please try a clearer recording.")
-                    elif "Could not request results from speech recognition service" in str(e):
-                        st.error("There was an issue connecting to the speech recognition service. Please try again later.")
-                    else:
-                        st.error(f"An unexpected error occurred: {str(e)}")
-                finally:
-                    # Clean up temporary file
-                    os.unlink(temp_file_path)
-                    is_processing = False
+            progress_thread = threading.Thread(target=update_progress)
+            progress_thread.start()
 
-    if st.button("Cancel Processing"):
-        if is_processing:
-            is_processing = False
-            st.warning("Processing cancelled by user.")
-            st.stop()
-        else:
-            st.info("No processing is currently running.")
+            process_thread = threading.Thread(
+                target=process_audio,
+                args=(temp_file_path, os.path.splitext(uploaded_file.name)[1], progress_queue, cancel_event)
+            )
+            process_thread.start()
+
+            if cancel_button.button("Cancel Processing"):
+                cancel_event.set()
+                st.warning("Processing cancelled by user.")
+                process_thread.join()
+                progress_thread.join()
+                st.stop()
+
+            process_thread.join()
+            progress_thread.join()
+
+            transcription, translation = process_thread._target(*process_thread._args)
+
+            if transcription and translation:
+                st.subheader("French Transcription:")
+                st.write(transcription)
+
+                st.subheader("English Translation:")
+                st.write(translation)
+
+            # Clean up temporary file
+            os.unlink(temp_file_path)
 
     st.markdown("---")
     st.write("Created with ❤️ using Streamlit")
