@@ -18,15 +18,18 @@ def transcribe_audio(file_path, file_extension):
     if file_extension in ['.mp3', '.wav', '.opus']:
         if file_extension == '.mp3':
             audio = AudioSegment.from_mp3(file_path)
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_wav:
+                audio.export(temp_wav.name, format='wav')
+                with sr.AudioFile(temp_wav.name) as source:
+                    audio_data = recognizer.record(source)
         elif file_extension == '.wav':
-            audio = AudioSegment.from_wav(file_path)
-        elif file_extension == '.opus':
-            audio = AudioSegment.from_opus(file_path)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_wav:
-            audio.export(temp_wav.name, format='wav')
-            with sr.AudioFile(temp_wav.name) as source:
+            with sr.AudioFile(file_path) as source:
                 audio_data = recognizer.record(source)
+        elif file_extension == '.opus':
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_wav:
+                os.system(f"ffmpeg -i {file_path} -acodec pcm_s16le -ar 16000 {temp_wav.name}")
+                with sr.AudioFile(temp_wav.name) as source:
+                    audio_data = recognizer.record(source)
     elif file_extension == '.mp4':
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_wav:
             os.system(f"ffmpeg -i {file_path} -acodec pcm_s16le -ar 16000 {temp_wav.name}")
