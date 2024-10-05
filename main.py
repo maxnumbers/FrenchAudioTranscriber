@@ -1,6 +1,7 @@
 import streamlit as st
 import speech_recognition as sr
 from pydub import AudioSegment
+import torch
 from transformers import pipeline
 import tempfile
 import os
